@@ -4,6 +4,51 @@
 ══════════════════════════════════════════════════════ */
 
 // ─────────────────────────────────────────────────────
+// BEEP — Web Audio API (no external library needed)
+// ─────────────────────────────────────────────────────
+let _audioCtx = null;
+function getAudioCtx() {
+  if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  // iOS requires resume after user gesture
+  if (_audioCtx.state === 'suspended') _audioCtx.resume();
+  return _audioCtx;
+}
+
+function playBeep(type = 'success') {
+  try {
+    const ctx = getAudioCtx();
+    const osc  = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    const t = ctx.currentTime;
+
+    if (type === 'success') {
+      // Two-tone rising beep — satisfying confirm sound
+      osc.frequency.setValueAtTime(880, t);
+      osc.frequency.setValueAtTime(1320, t + 0.08);
+      gain.gain.setValueAtTime(0.25, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+      osc.start(t); osc.stop(t + 0.22);
+    } else if (type === 'warning') {
+      // Double low-high
+      osc.frequency.setValueAtTime(500, t);
+      osc.frequency.setValueAtTime(700, t + 0.1);
+      gain.gain.setValueAtTime(0.2, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+      osc.start(t); osc.stop(t + 0.25);
+    } else {
+      // Error — low buzz
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(220, t);
+      gain.gain.setValueAtTime(0.2, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+      osc.start(t); osc.stop(t + 0.3);
+    }
+  } catch (e) { /* audio not supported — silent fallback */ }
+}
+
+// ─────────────────────────────────────────────────────
 // SETTINGS
 // ─────────────────────────────────────────────────────
 const Settings = {
@@ -291,12 +336,42 @@ async function testConnection() {
   }
 }
 
-function saveSettings() {
+async function saveSettings() {
   const url = document.getElementById('settingsGasUrl').value.trim();
   Settings.set({ gasUrl: url });
   closeModal('modalSettings');
-  toast('Settings saved', 'success');
-  if (url && navigator.onLine) syncNow();
+  toast('Settings saved — pulling data from Sheets…', 'success');
+
+  if (url && navigator.onLine) {
+    // Clear local demo data and pull real data from Sheets
+    setSyncState('syncing');
+    try {
+      const data = await gasGet('getAll');
+      if (data.ok) {
+        // Full overwrite — this device is now joining the shared dataset
+        const devs  = data.devices || [];
+        const asgns = (data.assignments || []).map(a => ({
+          ...a,
+          deviceIds: typeof a.deviceIds === 'string'
+            ? a.deviceIds.split(',').map(s => s.trim()).filter(Boolean)
+            : (a.deviceIds || [])
+        }));
+        DB.devices     = devs;
+        DB.assignments = asgns;
+        Queue.clear(); // local queue is irrelevant after full pull
+        Settings.setLastSync(new Date().toISOString());
+        setSyncState('online');
+        updateSyncStatus();
+        renderCurrentView();
+        toast(`Loaded ${devs.length} devices, ${asgns.length} assignments from Sheets`, 'success', 4000);
+      } else {
+        throw new Error(data.error || 'Unknown error');
+      }
+    } catch (e) {
+      setSyncState('error');
+      toast('Could not pull from Sheets: ' + e.message, 'error');
+    }
+  }
 }
 
 function clearLocalData() {
@@ -883,9 +958,19 @@ function stopScannerCompletely() {
   State.cameraActive = false;
 }
 
+// Debounce: ignore camera re-fires for 2.5s after any scan result
+let _lastScanTime = 0;
+let _lastScanId   = '';
+
 function handleScan(text) {
   if (!State.scanSession) return;
-  processScanResult(text.trim());
+  const id  = text.trim();
+  const now = Date.now();
+  // Ignore if same code scanned within 2.5 seconds (camera fires continuously)
+  if (id === _lastScanId && (now - _lastScanTime) < 2500) return;
+  _lastScanTime = now;
+  _lastScanId   = id;
+  processScanResult(id);
 }
 
 function manualScan() {
@@ -900,25 +985,28 @@ function manualScan() {
 
 function processScanResult(deviceId) {
   if (!State.scanSession) return;
+
   const device = DB.getDevice(deviceId);
   if (!device) {
+    playBeep('error');
     addFeedItem(deviceId, 'err', 'Device not registered');
-    toast(`"${deviceId}" not found`, 'error');
+    showScanFlash('red', `✕  Not found: ${deviceId}`);
     return;
   }
+
   if (State.scanSession.scannedIds.has(deviceId)) {
+    playBeep('warning');
     addFeedItem(deviceId, 'warn', 'Already in this session');
-    toast(`${deviceId} already scanned`, 'warning');
+    showScanFlash('orange', `⚠  Already scanned: ${deviceId}`);
     return;
   }
+
   const otherAsgn = DB.assignments.find(a =>
     a.id !== State.scanSession.assignmentId &&
     a.deviceIds.includes(deviceId) &&
     a.date === todayIso()
   );
-  if (otherAsgn) {
-    toast(`⚠ ${deviceId} also assigned to ${otherAsgn.campName}/${otherAsgn.department} today`, 'warning', 5000);
-  }
+
   State.scanSession.scannedIds.add(deviceId);
   const asgn = DB.getAssignment(State.scanSession.assignmentId);
   if (!asgn.deviceIds.includes(deviceId)) {
@@ -926,9 +1014,50 @@ function processScanResult(deviceId) {
       deviceIds: [...asgn.deviceIds, deviceId]
     });
   }
+
+  playBeep('success');
   addFeedItem(deviceId, 'ok', `${device.type} — added`);
   updateScanCounter();
-  toast(`${deviceId} scanned`, 'success', 1500);
+
+  const msg = otherAsgn
+    ? `✓  ${deviceId}  (also in ${otherAsgn.department})`
+    : `✓  ${deviceId} — ${device.type}`;
+  showScanFlash(otherAsgn ? 'orange' : 'green', msg);
+}
+
+// Full-screen flash confirmation — disappears after 1.2s
+function showScanFlash(color, message) {
+  const colors = {
+    green:  { bg: '#10B981', text: '#fff' },
+    orange: { bg: '#F59E0B', text: '#fff' },
+    red:    { bg: '#EF4444', text: '#fff' }
+  };
+  const c = colors[color] || colors.green;
+
+  let el = document.getElementById('scanFlash');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'scanFlash';
+    el.style.cssText = `
+      position:fixed;top:0;left:0;right:0;bottom:0;z-index:9000;
+      display:flex;align-items:center;justify-content:center;
+      flex-direction:column;gap:10px;pointer-events:none;
+      font-size:22px;font-weight:800;letter-spacing:.02em;
+      transition:opacity .3s ease;
+    `;
+    document.body.appendChild(el);
+  }
+
+  el.style.background = c.bg;
+  el.style.color = c.text;
+  el.style.opacity = '1';
+  el.textContent = message;
+
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => {
+    el.style.opacity = '0';
+    setTimeout(() => { el.style.background = 'transparent'; }, 300);
+  }, 1000);
 }
 
 function addFeedItem(id, status, msg) {
@@ -1139,37 +1268,58 @@ window.addEventListener('offline', () => {
 // ─────────────────────────────────────────────────────
 // INIT
 // ─────────────────────────────────────────────────────
-function init() {
-  const now = new Date();
-  const dateStr = now.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+async function init() {
+  // Unlock audio context on first user interaction (required by iOS/Android)
+  document.addEventListener('touchstart', () => getAudioCtx(), { once: true });
+  document.addEventListener('click',      () => getAudioCtx(), { once: true });
 
-  if (DB.devices.length === 0 && DB.assignments.length === 0) seedDemo();
+  updateSyncStatus();
+
+  const gasUrl = Settings.gasUrl();
+
+  if (gasUrl && navigator.onLine) {
+    // ── Connected mode: pull from Sheets first, THEN render ──
+    // This ensures all devices start with the same data (like WhatsApp)
+    setSyncState('syncing');
+    document.getElementById('pageTitle').textContent = 'Syncing…';
+    try {
+      const data = await gasGet('getAll');
+      if (data.ok) {
+        mergeRemote(data.devices || [], data.assignments || []);
+        Settings.setLastSync(new Date().toISOString());
+        setSyncState('online');
+      }
+    } catch (e) {
+      setSyncState('error');
+      console.warn('[Init] initial pull failed:', e.message);
+    }
+    // Drain any operations queued while offline
+    await drainQueue();
+  } else if (!gasUrl && DB.devices.length === 0 && DB.assignments.length === 0) {
+    // ── No backend configured: load demo data so app isn't empty ──
+    seedDemo();
+  }
 
   navigate('dashboard');
   updateSyncStatus();
 
-  // Sync on load
-  if (Settings.gasUrl() && navigator.onLine) {
-    setTimeout(() => syncNow(true), 1500);
-  }
-
-  // Auto-sync every 30 seconds when online
+  // ── Real-time polling: every 15s (like WhatsApp background sync) ──
   setInterval(() => {
     if (navigator.onLine && Settings.gasUrl() && !_syncInProgress) {
       syncNow(true);
     } else {
       updateSyncStatus();
     }
-  }, 30000);
+  }, 15000);
 
-  // Sync when user returns to the tab / app (phone switches back)
+  // Sync when user switches back to the tab/app (phone app-switching)
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && navigator.onLine && Settings.gasUrl()) {
       syncNow(true);
     }
   });
 
-  // Sync when window regains focus (desktop)
+  // Sync when browser window regains focus (desktop)
   window.addEventListener('focus', () => {
     if (navigator.onLine && Settings.gasUrl()) {
       syncNow(true);
@@ -1177,12 +1327,13 @@ function init() {
   });
 }
 
+// Only used when no backend is configured — gives something to explore
 function seedDemo() {
   const types = ['Tablet','Tablet','Tablet','Laptop','Scanner'];
   for (let i = 1; i <= 12; i++) {
     const d = { id: genId('DEV', i), type: types[i % types.length], notes: i % 4 === 0 ? 'Spare unit' : '', createdAt: new Date().toISOString() };
     d.updatedAt = d.createdAt;
-    const arr = DB.devices; arr.push(d); DB.devices = arr; // direct write, no enqueue for seed
+    const arr = DB.devices; arr.push(d); DB.devices = arr;
   }
   const depts = ['Registration','Diagnosis','Pharmacy','Triage'];
   const camps = ['Camp Alpha','Camp Beta'];
@@ -1192,7 +1343,7 @@ function seedDemo() {
       const deviceIds = DB.devices.slice((aNum-1)*3, (aNum-1)*3+3).map(d => d.id);
       const a = { id: genId('ASG', aNum++), campName: camp, department: dept, date: todayIso(), notes: '', deviceIds, createdAt: new Date().toISOString() };
       a.updatedAt = a.createdAt;
-      const arr = DB.assignments; arr.push(a); DB.assignments = arr; // direct write
+      const arr = DB.assignments; arr.push(a); DB.assignments = arr;
     });
   });
 }
