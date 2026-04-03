@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(start \"\" \"c:/Users/allyw/Documents/stoke mngmnt/index.html\")",
+      "Bash(git --version)",
+      "Bash(git config:*)"
+    ]
+  }
+}

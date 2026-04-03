@@ -1,0 +1,39 @@
+{
+  "name": "FieldTrack — Device Manager",
+  "short_name": "FieldTrack",
+  "description": "Field camp device tracking and assignment system",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#1D4ED8",
+  "theme_color": "#2563EB",
+  "categories": ["utilities", "productivity"],
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Start Scanning",
+      "short_name": "Scan",
+      "url": "./index.html#scan",
+      "description": "Open scan session"
+    },
+    {
+      "name": "New Assignment",
+      "short_name": "Assign",
+      "url": "./index.html#assignments",
+      "description": "Create assignment"
+    }
+  ]
+}

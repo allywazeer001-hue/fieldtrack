@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <title>FieldTrack</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="./manifest.json"/>
+  <meta name="theme-color" content="#2563EB"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="FieldTrack"/>
+  <link rel="apple-touch-icon" href="./icon.svg"/>
+
+  <link rel="stylesheet" href="styles.css"/>
+
+  <!-- Libraries -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+
+<!-- ── Install Banner ── -->
+<div id="installBanner" class="install-banner hidden">
+  <div class="install-banner-text">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2z"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+    Install FieldTrack as an app on your phone
+  </div>
+  <div class="flex gap-2">
+    <button class="btn btn-sm btn-primary" id="btnInstall" onclick="triggerInstall()">Install</button>
+    <button class="btn btn-sm btn-ghost" onclick="dismissInstall()">✕</button>
+  </div>
+</div>
+
+<div class="app-layout">
+
+  <!-- ── Sidebar (desktop) ── -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="logo">
+        <img src="icon.svg" width="28" height="28" alt=""/>
+        <span class="logo-text">FieldTrack</span>
+      </div>
+    </div>
+    <nav class="sidebar-nav">
+      <a class="nav-item active" data-view="dashboard" onclick="navigate('dashboard')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        <span>Dashboard</span>
+      </a>
+      <a class="nav-item" data-view="devices" onclick="navigate('devices')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18" stroke-width="3" stroke-linecap="round"/></svg>
+        <span>Devices</span>
+      </a>
+      <a class="nav-item" data-view="assignments" onclick="navigate('assignments')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="13" y2="16"/></svg>
+        <span>Assignments</span>
+      </a>
+      <a class="nav-item nav-scan" data-view="scan" onclick="navigate('scan')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><rect x="7" y="7" width="3" height="3"/><rect x="14" y="7" width="3" height="3"/><rect x="7" y="14" width="3" height="3"/><rect x="14" y="14" width="3" height="3"/></svg>
+        <span>Scan</span>
+      </a>
+      <a class="nav-item" data-view="reports" onclick="navigate('reports')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+        <span>Reports</span>
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      <div id="sidebarSyncStatus" class="sidebar-sync-status"></div>
+      <button class="sidebar-settings-btn" onclick="openModal('modalSettings')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93A10 10 0 0 0 4.93 19.07"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2"/></svg>
+        Settings
+      </button>
+    </div>
+  </aside>
+
+  <!-- ── Main Wrapper ── -->
+  <div class="main-wrapper">
+
+    <!-- Topbar -->
+    <header class="topbar">
+      <button class="menu-btn" id="menuBtn" onclick="toggleSidebar()">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+      <h1 class="page-title" id="pageTitle">Dashboard</h1>
+      <div class="topbar-right">
+        <div class="sync-indicator" id="syncIndicator" onclick="syncNow()" title="Sync status — tap to sync">
+          <span class="sync-dot" id="syncDot"></span>
+          <span class="sync-label" id="syncLabel">—</span>
+        </div>
+        <button class="icon-btn" onclick="openModal('modalSettings')" title="Settings">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main-content">
+
+      <!-- ════ DASHBOARD ════ -->
+      <section class="view" id="view-dashboard">
+        <div class="stats-grid" id="dashStats"></div>
+        <div class="dash-grid">
+          <div class="card">
+            <div class="card-header">
+              <h3>Recent Assignments</h3>
+              <button class="btn btn-ghost btn-sm" onclick="navigate('assignments')">View all</button>
+            </div>
+            <div id="dashRecentAssignments" class="table-wrap"></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><h3>Quick Actions</h3></div>
+            <div class="quick-actions">
+              <button class="qa-btn" onclick="openModal('modalRegisterDevice')">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="9.5" y1="10.5" x2="14.5" y2="10.5"/></svg>
+                Register Device
+              </button>
+              <button class="qa-btn" onclick="openModal('modalCreateAssignment')">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><line x1="12" y1="11" x2="12" y2="16"/><line x1="9.5" y1="13.5" x2="14.5" y2="13.5"/></svg>
+                New Assignment
+              </button>
+              <button class="qa-btn qa-btn-primary" onclick="navigate('scan')">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><rect x="7" y="7" width="3" height="3"/><rect x="14" y="7" width="3" height="3"/><rect x="7" y="14" width="3" height="3"/><rect x="14" y="14" width="3" height="3"/></svg>
+                Start Scanning
+              </button>
+              <button class="qa-btn" onclick="navigate('reports')">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+                View Reports
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ════ DEVICES ════ -->
+      <section class="view hidden" id="view-devices">
+        <div class="view-toolbar">
+          <div class="search-wrap">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" id="deviceSearch" class="search-input" placeholder="Search devices…" oninput="renderDevices()">
+          </div>
+          <select id="deviceTypeFilter" class="select-sm" onchange="renderDevices()">
+            <option value="">All Types</option>
+            <option>Tablet</option><option>Laptop</option><option>Phone</option>
+            <option>Scanner</option><option>Other</option>
+          </select>
+          <button class="btn btn-primary" onclick="openModal('modalRegisterDevice')">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Register
+          </button>
+        </div>
+        <div class="devices-grid" id="devicesGrid"></div>
+      </section>
+
+      <!-- ════ ASSIGNMENTS ════ -->
+      <section class="view hidden" id="view-assignments">
+        <div class="view-toolbar">
+          <input type="text" id="assignSearch" class="search-input" placeholder="Search camp or dept…" oninput="renderAssignments()" style="flex:1;max-width:300px">
+          <input type="date" id="assignDateFilter" class="input-sm" onchange="renderAssignments()">
+          <button class="btn btn-primary" onclick="openModal('modalCreateAssignment')">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            New
+          </button>
+        </div>
+        <div class="assignments-list" id="assignmentsList"></div>
+      </section>
+
+      <!-- ════ SCAN ════ -->
+      <section class="view hidden" id="view-scan">
+        <div class="scan-layout">
+
+          <div class="scan-panel">
+            <div class="card scan-assignment-card">
+              <div class="card-header"><h3>Active Assignment</h3></div>
+              <div id="scanAssignmentContent">
+                <p class="text-muted mb-3">Select an assignment to start scanning devices.</p>
+                <select id="scanAssignmentSelect" class="input w-full mb-3" onchange="onScanAssignmentChange()">
+                  <option value="">— Select Assignment —</option>
+                </select>
+                <div class="flex gap-2">
+                  <button class="btn btn-primary flex-1" id="btnStartScan" onclick="startScanSession()" disabled>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                    Start Session
+                  </button>
+                  <button class="btn btn-outline" onclick="openModal('modalCreateAssignment')">New</button>
+                </div>
+              </div>
+              <div id="scanActiveAssignment" class="hidden">
+                <div class="active-asgn-badge" id="activeAsgnBadge"></div>
+                <button class="btn btn-outline btn-sm mt-2 w-full" onclick="endScanSession()">End Session</button>
+              </div>
+            </div>
+
+            <div class="card scan-counter-card">
+              <div class="counter-label">Scanned This Session</div>
+              <div class="counter-number" id="scanCount">0</div>
+              <div class="counter-sub" id="scanCountSub">devices recorded</div>
+            </div>
+
+            <div class="card">
+              <div class="card-header"><h3>Manual Entry</h3></div>
+              <div class="flex gap-2">
+                <input type="text" id="manualDeviceId" class="input flex-1" placeholder="Device ID (e.g. DEV-001)" onkeydown="if(event.key==='Enter')manualScan()">
+                <button class="btn btn-secondary" onclick="manualScan()">Add</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="scan-main">
+            <div class="card scan-camera-card">
+              <div class="scan-area" id="scanArea">
+                <div id="scanIdle" class="scan-idle">
+                  <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><rect x="7" y="7" width="3" height="3"/><rect x="14" y="7" width="3" height="3"/><rect x="7" y="14" width="3" height="3"/><rect x="14" y="14" width="3" height="3"/></svg>
+                  <p>Session not started</p>
+                  <p class="text-sm text-muted">Select an assignment and tap Start Session</p>
+                </div>
+                <div id="reader" class="hidden"></div>
+              </div>
+              <div id="scanStatusBar" class="scan-status-bar hidden">
+                <span class="scan-dot"></span>
+                <span id="scanStatusText">Scanning…</span>
+                <button class="btn btn-ghost btn-sm" id="btnStopCamera" onclick="stopCamera()">Stop Camera</button>
+                <button class="btn btn-secondary btn-sm" id="btnStartCamera" onclick="startCamera()" style="display:none">Start Camera</button>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <h3>Scan Feed</h3>
+                <button class="btn btn-ghost btn-sm" id="clearFeedBtn" onclick="clearFeed()" style="display:none">Clear</button>
+              </div>
+              <div id="scanFeed" class="scan-feed">
+                <p class="text-muted text-center" style="padding:20px">Scanned devices will appear here</p>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ════ REPORTS ════ -->
+      <section class="view hidden" id="view-reports">
+        <div class="card mb-4">
+          <div class="card-header"><h3>Filters</h3></div>
+          <div class="report-filters">
+            <div class="form-group">
+              <label>Camp Name</label>
+              <input type="text" id="repCamp" class="input" placeholder="All camps">
+            </div>
+            <div class="form-group">
+              <label>Department</label>
+              <select id="repDept" class="input">
+                <option value="">All</option>
+                <option>Registration</option><option>Diagnosis</option><option>Pharmacy</option>
+                <option>Triage</option><option>Laboratory</option><option>Nursing</option><option>Other</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Date From</label>
+              <input type="date" id="repDateFrom" class="input">
+            </div>
+            <div class="form-group">
+              <label>Date To</label>
+              <input type="date" id="repDateTo" class="input">
+            </div>
+            <div class="form-group form-group-btn">
+              <button class="btn btn-primary w-full" onclick="generateReport()">Generate</button>
+            </div>
+          </div>
+        </div>
+        <div id="reportOutput" class="hidden">
+          <div class="stats-grid" id="reportStats"></div>
+          <div class="card">
+            <div class="card-header">
+              <h3>Assignment Report</h3>
+              <div class="flex gap-2">
+                <button class="btn btn-outline btn-sm" onclick="exportPDF()">PDF</button>
+                <button class="btn btn-outline btn-sm" onclick="exportExcel()">Excel</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="table" id="reportTable">
+                <thead><tr><th>Camp</th><th>Department</th><th>Date</th><th>Devices</th><th>Device IDs</th></tr></thead>
+                <tbody id="reportTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<!-- ── Bottom Nav (mobile) ── -->
+<nav class="bottom-nav" id="bottomNav">
+  <a class="bn-item active" data-view="dashboard" onclick="navigate('dashboard')">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+    <span>Dashboard</span>
+  </a>
+  <a class="bn-item" data-view="devices" onclick="navigate('devices')">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18" stroke-width="3" stroke-linecap="round"/></svg>
+    <span>Devices</span>
+  </a>
+  <a class="bn-item bn-scan" data-view="scan" onclick="navigate('scan')">
+    <div class="bn-scan-circle">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><rect x="7" y="7" width="3" height="3"/><rect x="14" y="7" width="3" height="3"/><rect x="7" y="14" width="3" height="3"/><rect x="14" y="14" width="3" height="3"/></svg>
+    </div>
+    <span>Scan</span>
+  </a>
+  <a class="bn-item" data-view="assignments" onclick="navigate('assignments')">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/></svg>
+    <span>Assign</span>
+  </a>
+  <a class="bn-item" data-view="reports" onclick="navigate('reports')">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+    <span>Reports</span>
+  </a>
+</nav>
+
+<!-- ══════════════ MODALS ══════════════ -->
+<div class="modal-overlay hidden" id="modalOverlay" onclick="closeAllModals(event)">
+
+  <!-- Settings -->
+  <div class="modal" id="modalSettings">
+    <div class="modal-header">
+      <h2>Settings — Google Sheets Sync</h2>
+      <button class="modal-close" onclick="closeModal('modalSettings')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="setup-steps">
+        <div class="setup-step">
+          <div class="step-num">1</div>
+          <div>Open Google Sheets → <strong>Extensions → Apps Script</strong> → paste <code>Code.gs</code></div>
+        </div>
+        <div class="setup-step">
+          <div class="step-num">2</div>
+          <div><strong>Deploy → New Deployment → Web App</strong><br>Execute as: Me · Who has access: <strong>Anyone</strong></div>
+        </div>
+        <div class="setup-step">
+          <div class="step-num">3</div>
+          <div>Copy the <strong>Web App URL</strong> and paste below</div>
+        </div>
+      </div>
+      <div class="divider"></div>
+      <div class="form-group">
+        <label>Google Apps Script Web App URL</label>
+        <input type="url" id="settingsGasUrl" class="input" placeholder="https://script.google.com/macros/s/…/exec">
+      </div>
+      <div id="pingResult" class="ping-result hidden"></div>
+      <div class="form-group" style="margin-top:8px">
+        <button class="btn btn-outline btn-sm" onclick="testConnection()">Test Connection</button>
+      </div>
+      <div class="divider"></div>
+      <div class="form-group">
+        <label>Sync Queue</label>
+        <p id="queueStatus" class="text-sm text-muted">—</p>
+      </div>
+      <div class="form-group">
+        <label style="color:var(--danger)">Danger Zone</label>
+        <div class="flex gap-2">
+          <button class="btn btn-outline btn-sm" onclick="forcePull()">Pull from Sheets (overwrite local)</button>
+          <button class="btn btn-danger-outline btn-sm" onclick="clearLocalData()">Clear local data</button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modalSettings')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveSettings()">Save &amp; Sync</button>
+    </div>
+  </div>
+
+  <!-- Register Device -->
+  <div class="modal" id="modalRegisterDevice">
+    <div class="modal-header">
+      <h2>Register Device</h2>
+      <button class="modal-close" onclick="closeModal('modalRegisterDevice')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Device ID <span class="text-muted">(auto-generated if blank)</span></label>
+        <input type="text" id="regDeviceId" class="input" placeholder="e.g. TAB-042">
+      </div>
+      <div class="form-group">
+        <label>Device Type *</label>
+        <select id="regDeviceType" class="input" required>
+          <option value="">Select type…</option>
+          <option>Tablet</option><option>Laptop</option><option>Phone</option>
+          <option>Scanner</option><option>Other</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Notes</label>
+        <textarea id="regNotes" class="input" rows="2" placeholder="Optional notes…"></textarea>
+      </div>
+      <div class="form-group">
+        <label>Quantity (batch register)</label>
+        <input type="number" id="regQty" class="input" value="1" min="1" max="100">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modalRegisterDevice')">Cancel</button>
+      <button class="btn btn-primary" onclick="registerDevice()">Register</button>
+    </div>
+  </div>
+
+  <!-- Create Assignment -->
+  <div class="modal" id="modalCreateAssignment">
+    <div class="modal-header">
+      <h2>New Assignment</h2>
+      <button class="modal-close" onclick="closeModal('modalCreateAssignment')">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label>Camp Name *</label>
+        <input type="text" id="asgCamp" class="input" placeholder="e.g. Camp Alpha">
+      </div>
+      <div class="form-group">
+        <label>Department *</label>
+        <select id="asgDept" class="input">
+          <option value="">Select department…</option>
+          <option>Registration</option><option>Diagnosis</option><option>Pharmacy</option>
+          <option>Triage</option><option>Laboratory</option><option>Nursing</option><option>Other</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Date</label>
+        <input type="date" id="asgDate" class="input">
+      </div>
+      <div class="form-group">
+        <label>Notes</label>
+        <textarea id="asgNotes" class="input" rows="2" placeholder="Optional…"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modalCreateAssignment')">Cancel</button>
+      <button class="btn btn-primary" onclick="createAssignment()">Create</button>
+    </div>
+  </div>
+
+  <!-- Device Detail -->
+  <div class="modal modal-lg" id="modalDeviceDetail">
+    <div class="modal-header">
+      <h2>Device Details</h2>
+      <button class="modal-close" onclick="closeModal('modalDeviceDetail')">×</button>
+    </div>
+    <div class="modal-body" id="deviceDetailBody"></div>
+    <div class="modal-footer">
+      <button class="btn btn-danger-outline btn-sm" onclick="deleteCurrentDevice()">Delete</button>
+      <button class="btn btn-ghost" onclick="closeModal('modalDeviceDetail')">Close</button>
+      <button class="btn btn-outline" onclick="printQR()">Print QR</button>
+    </div>
+  </div>
+
+  <!-- Assignment Detail -->
+  <div class="modal modal-lg" id="modalAssignmentDetail">
+    <div class="modal-header">
+      <h2>Assignment Details</h2>
+      <button class="modal-close" onclick="closeModal('modalAssignmentDetail')">×</button>
+    </div>
+    <div class="modal-body" id="assignmentDetailBody"></div>
+    <div class="modal-footer">
+      <button class="btn btn-danger-outline btn-sm" onclick="deleteCurrentAssignment()">Delete</button>
+      <button class="btn btn-ghost" onclick="closeModal('modalAssignmentDetail')">Close</button>
+      <button class="btn btn-primary" onclick="scanIntoCurrentAssignment()">Scan into this</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script src="app.js"></script>
+<script>
+  // Register service worker
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js')
+        .then(reg => console.log('[SW] Registered', reg.scope))
+        .catch(err => console.warn('[SW] Failed:', err));
+    });
+  }
+</script>
+</body>
+</html>
