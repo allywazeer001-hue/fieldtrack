@@ -88,6 +88,8 @@ const Queue = {
   length() { return this.get().length; }
 };
 
+let _drainInProgress = false;
+
 function enqueueOp(action, payload) {
   Queue.push({
     id: Date.now() + '-' + Math.random().toString(36).slice(2),
@@ -96,31 +98,53 @@ function enqueueOp(action, payload) {
     ts: new Date().toISOString(),
     retries: 0
   });
-  if (navigator.onLine && Settings.gasUrl()) {
-    setTimeout(drainQueue, 300);
-  }
   updateSyncStatus();
+  // Push to Sheets immediately if online
+  if (navigator.onLine && Settings.gasUrl()) {
+    setTimeout(drainQueue, 200);
+  }
 }
 
 async function drainQueue() {
+  if (_drainInProgress) return;
   const gasUrl = Settings.gasUrl();
   if (!gasUrl || !navigator.onLine) return;
 
   const queue = Queue.get();
   if (!queue.length) return;
 
+  _drainInProgress = true;
+  setSyncState('syncing');
+
   const failed = [];
   for (const op of queue) {
     try {
-      const res = await gasPost(op.action, op.payload);
+      // Build the correct POST body for each action type
+      let body;
+      if (op.action === 'saveDevice')      body = { action: op.action, device:     op.payload.device };
+      else if (op.action === 'saveAssignment') body = { action: op.action, assignment: op.payload.assignment };
+      else if (op.action === 'deleteDevice')   body = { action: op.action, id: op.payload.id };
+      else if (op.action === 'deleteAssignment') body = { action: op.action, id: op.payload.id };
+      else body = { action: op.action, ...op.payload };
+
+      const res = await gasPostRaw(body);
       if (!res.ok) throw new Error(res.error || 'Server error');
     } catch (e) {
+      console.warn('[Sync] op failed:', op.action, e.message);
       op.retries = (op.retries || 0) + 1;
       if (op.retries < 5) failed.push(op);
-      // else discard after 5 failures
     }
   }
+
   Queue.save(failed);
+  _drainInProgress = false;
+
+  if (failed.length === 0) {
+    Settings.setLastSync(new Date().toISOString());
+    setSyncState('online');
+  } else {
+    setSyncState('error');
+  }
   updateSyncStatus();
 }
 
@@ -137,49 +161,57 @@ async function gasGet(action) {
   return res.json();
 }
 
-async function gasPost(action, payload) {
+// Post a pre-built body object (drainQueue builds the body)
+async function gasPostRaw(bodyObj) {
   const url = Settings.gasUrl();
   if (!url) throw new Error('No Google Sheets URL configured');
+  // Content-Type text/plain avoids CORS preflight on GAS
   const res = await fetch(url, {
     method: 'POST',
-    // text/plain avoids CORS preflight — GAS parses the JSON body manually
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ action, ...payload }),
+    body: JSON.stringify(bodyObj),
     redirect: 'follow'
   });
   return res.json();
 }
 
-async function syncNow() {
+let _syncInProgress = false;
+
+async function syncNow(silent = false) {
   const gasUrl = Settings.gasUrl();
   if (!gasUrl) {
-    toast('No Google Sheets URL — configure in Settings', 'warning');
+    if (!silent) toast('No Google Sheets URL — configure in Settings', 'warning');
     return;
   }
   if (!navigator.onLine) {
-    toast('You are offline — sync will happen when connection returns', 'warning');
+    if (!silent) toast('You are offline — changes saved locally', 'warning');
     return;
   }
-
+  if (_syncInProgress) return;
+  _syncInProgress = true;
   setSyncState('syncing');
+
   try {
-    // 1. Push pending local changes
+    // 1. Push any pending local changes first
     await drainQueue();
 
     // 2. Pull latest from Sheets
     const data = await gasGet('getAll');
     if (!data.ok) throw new Error(data.error || 'Sync failed');
 
-    // 3. Merge — remote wins for items that exist on both sides
+    // 3. Merge remote into local (last updatedAt wins)
     mergeRemote(data.devices || [], data.assignments || []);
     Settings.setLastSync(new Date().toISOString());
     setSyncState('online');
     updateSyncStatus();
     renderCurrentView();
-    toast('Synced with Google Sheets', 'success');
+    if (!silent) toast('Synced with Google Sheets', 'success');
   } catch (e) {
     setSyncState('error');
-    toast('Sync failed: ' + e.message, 'error');
+    if (!silent) toast('Sync failed: ' + e.message, 'error');
+    console.warn('[Sync] failed:', e);
+  } finally {
+    _syncInProgress = false;
   }
 }
 
@@ -247,15 +279,12 @@ async function testConnection() {
   const el = document.getElementById('pingResult');
   el.className = 'ping-result'; el.textContent = 'Testing…'; el.classList.remove('hidden');
   try {
-    const tempUrl = Settings.gasUrl();
-    // Temporarily use the new URL for the test
-    Settings.set({ gasUrl: url });
-    const res = await gasGet('ping');
-    Settings.set({ gasUrl: tempUrl || url });
-    if (res.ok) {
+    const res = await fetch(`${url}?action=ping`, { redirect: 'follow', cache: 'no-store' });
+    const data = await res.json();
+    if (data.ok) {
       el.className = 'ping-result ok'; el.textContent = '✓ Connected! Google Sheets is reachable.';
     } else {
-      el.className = 'ping-result err'; el.textContent = '✗ Error: ' + (res.error || 'Unknown');
+      el.className = 'ping-result err'; el.textContent = '✗ ' + (data.error || 'Unknown error');
     }
   } catch (e) {
     el.className = 'ping-result err'; el.textContent = '✗ ' + e.message;
@@ -1119,13 +1148,33 @@ function init() {
   navigate('dashboard');
   updateSyncStatus();
 
-  // Auto-sync on load if configured
+  // Sync on load
   if (Settings.gasUrl() && navigator.onLine) {
-    setTimeout(syncNow, 1500);
+    setTimeout(() => syncNow(true), 1500);
   }
 
-  // Refresh sync status every minute
-  setInterval(updateSyncStatus, 60000);
+  // Auto-sync every 30 seconds when online
+  setInterval(() => {
+    if (navigator.onLine && Settings.gasUrl() && !_syncInProgress) {
+      syncNow(true);
+    } else {
+      updateSyncStatus();
+    }
+  }, 30000);
+
+  // Sync when user returns to the tab / app (phone switches back)
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && navigator.onLine && Settings.gasUrl()) {
+      syncNow(true);
+    }
+  });
+
+  // Sync when window regains focus (desktop)
+  window.addEventListener('focus', () => {
+    if (navigator.onLine && Settings.gasUrl()) {
+      syncNow(true);
+    }
+  });
 }
 
 function seedDemo() {

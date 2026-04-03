@@ -17,7 +17,7 @@
  *  9. Click Deploy → Authorize → Copy the Web App URL
  * 10. Paste that URL into FieldTrack Settings
  *
- *  The script will auto-create "Devices" and "Assignments" sheets.
+ *  After any code change → Deploy → "Manage deployments" → Edit → New version
  */
 
 const SHEET_DEVICES     = 'Devices';
@@ -26,7 +26,7 @@ const SHEET_ASSIGNMENTS = 'Assignments';
 const DEVICE_COLS     = ['id','type','notes','createdAt','updatedAt'];
 const ASSIGNMENT_COLS = ['id','campName','department','date','notes','deviceIds','createdAt','updatedAt'];
 
-// ── Entry points ──────────────────────────────────────
+// ── GET ───────────────────────────────────────────────
 
 function doGet(e) {
   const action = (e.parameter && e.parameter.action) || 'getAll';
@@ -37,45 +37,67 @@ function doGet(e) {
     if (action === 'getAll') {
       return json({
         ok: true,
-        devices: readSheet(SHEET_DEVICES, DEVICE_COLS),
+        devices:     readSheet(SHEET_DEVICES, DEVICE_COLS),
         assignments: readSheet(SHEET_ASSIGNMENTS, ASSIGNMENT_COLS)
       });
     }
-    return json({ ok: false, error: 'Unknown action: ' + action });
+    return json({ ok: false, error: 'Unknown GET action: ' + action });
   } catch (err) {
     return json({ ok: false, error: err.message });
   }
 }
+
+// ── POST ──────────────────────────────────────────────
 
 function doPost(e) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
     const body = JSON.parse(e.postData.contents);
-    const { action, data } = body;
+    const action = body.action;
+
+    // Each operation sends its payload at the top level of body
+    // e.g. { action: 'saveDevice', device: {...} }
+    //      { action: 'saveAssignment', assignment: {...} }
+    //      { action: 'deleteDevice', id: 'DEV-001' }
 
     switch (action) {
-      case 'saveDevice':
-        return json({ ok: true, data: upsert(SHEET_DEVICES, DEVICE_COLS, data) });
-      case 'saveAssignment':
-        return json({ ok: true, data: upsert(SHEET_ASSIGNMENTS, ASSIGNMENT_COLS, data) });
-      case 'deleteDevice':
-        deleteById(SHEET_DEVICES, data.id);
+
+      case 'saveDevice': {
+        const device = body.device;
+        if (!device || !device.id) return json({ ok: false, error: 'Missing device data' });
+        return json({ ok: true, data: upsert(SHEET_DEVICES, DEVICE_COLS, device) });
+      }
+
+      case 'saveAssignment': {
+        const assignment = body.assignment;
+        if (!assignment || !assignment.id) return json({ ok: false, error: 'Missing assignment data' });
+        return json({ ok: true, data: upsert(SHEET_ASSIGNMENTS, ASSIGNMENT_COLS, assignment) });
+      }
+
+      case 'deleteDevice': {
+        const id = body.id;
+        if (!id) return json({ ok: false, error: 'Missing id' });
+        deleteById(SHEET_DEVICES, id);
         return json({ ok: true });
-      case 'deleteAssignment':
-        deleteById(SHEET_ASSIGNMENTS, data.id);
+      }
+
+      case 'deleteAssignment': {
+        const id = body.id;
+        if (!id) return json({ ok: false, error: 'Missing id' });
+        deleteById(SHEET_ASSIGNMENTS, id);
         return json({ ok: true });
-      case 'batchSync':
-        // data = { devices: [...], assignments: [...] }
-        if (data.devices) {
-          data.devices.forEach(d => upsert(SHEET_DEVICES, DEVICE_COLS, d));
-        }
-        if (data.assignments) {
-          data.assignments.forEach(a => upsert(SHEET_ASSIGNMENTS, ASSIGNMENT_COLS, a));
-        }
+      }
+
+      case 'batchSync': {
+        // body = { action, devices: [...], assignments: [...] }
+        (body.devices     || []).forEach(d => upsert(SHEET_DEVICES,     DEVICE_COLS,     d));
+        (body.assignments || []).forEach(a => upsert(SHEET_ASSIGNMENTS, ASSIGNMENT_COLS, a));
         return json({ ok: true });
+      }
+
       default:
-        return json({ ok: false, error: 'Unknown action: ' + action });
+        return json({ ok: false, error: 'Unknown POST action: ' + action });
     }
   } catch (err) {
     return json({ ok: false, error: err.message });
@@ -108,43 +130,50 @@ function readSheet(sheetName, cols) {
   const headers = data[0];
   return data.slice(1).map(row => {
     const obj = {};
-    headers.forEach((h, i) => { obj[h] = row[i] || ''; });
+    headers.forEach((h, i) => { obj[h] = row[i] !== undefined ? String(row[i]) : ''; });
     return obj;
-  }).filter(r => r.id); // skip blank rows
+  }).filter(r => r.id && r.id.trim() !== '');
 }
 
 function upsert(sheetName, cols, obj) {
   const sh = ensureSheet(sheetName, cols);
-  obj.updatedAt = new Date().toISOString();
-  if (!obj.createdAt) obj.createdAt = obj.updatedAt;
+
+  // Serialize deviceIds array → comma-separated string for sheet storage
+  const clean = Object.assign({}, obj);
+  if (Array.isArray(clean.deviceIds)) {
+    clean.deviceIds = clean.deviceIds.join(',');
+  }
+
+  clean.updatedAt = new Date().toISOString();
+  if (!clean.createdAt) clean.createdAt = clean.updatedAt;
 
   const data = sh.getDataRange().getValues();
   const headers = data[0];
-  const idCol = headers.indexOf('id') + 1; // 1-based
+  const idColIdx = headers.indexOf('id'); // 0-based for data array
 
-  // Search existing rows
-  for (let r = 2; r <= data.length; r++) {
-    if (data[r - 1][idCol - 1] === obj.id) {
-      // Update existing row
-      const row = cols.map(c => obj[c] !== undefined ? obj[c] : '');
-      sh.getRange(r, 1, 1, cols.length).setValues([row]);
-      return obj;
+  // Find existing row and update it
+  for (let r = 1; r < data.length; r++) {
+    if (String(data[r][idColIdx]) === String(clean.id)) {
+      const row = cols.map(c => clean[c] !== undefined ? clean[c] : '');
+      sh.getRange(r + 1, 1, 1, cols.length).setValues([row]);
+      return clean;
     }
   }
 
-  // Append new row
-  sh.appendRow(cols.map(c => obj[c] !== undefined ? obj[c] : ''));
-  return obj;
+  // Not found — append new row
+  sh.appendRow(cols.map(c => clean[c] !== undefined ? clean[c] : ''));
+  return clean;
 }
 
 function deleteById(sheetName, id) {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sh) return;
   const data = sh.getDataRange().getValues();
-  const idCol = data[0].indexOf('id');
-  for (let r = data.length; r >= 2; r--) {
-    if (data[r - 1][idCol] === id) {
-      sh.deleteRow(r);
+  const idColIdx = data[0].indexOf('id');
+  // Delete from bottom to avoid row index shifting
+  for (let r = data.length - 1; r >= 1; r--) {
+    if (String(data[r][idColIdx]) === String(id)) {
+      sh.deleteRow(r + 1);
       return;
     }
   }
@@ -156,9 +185,9 @@ function json(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-// ── Utility: Init sheets manually (run once if needed) ─
+// ── Manual init (run once from script editor if needed) ─
 function initSheets() {
   ensureSheet(SHEET_DEVICES, DEVICE_COLS);
   ensureSheet(SHEET_ASSIGNMENTS, ASSIGNMENT_COLS);
-  SpreadsheetApp.getUi().alert('Sheets initialized!');
+  SpreadsheetApp.getUi().alert('Sheets ready!');
 }
