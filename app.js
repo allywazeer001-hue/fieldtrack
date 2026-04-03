@@ -61,7 +61,7 @@ const Settings = {
 };
 
 // ─────────────────────────────────────────────────────
-// DB — LocalStorage layer (source of truth for UI)
+// DB — localStorage as local cache; Sheets is the truth
 // ─────────────────────────────────────────────────────
 const DB = {
   K: { DEVICES: 'ft_devices', ASSIGNMENTS: 'ft_assignments' },
@@ -71,18 +71,14 @@ const DB = {
   set assignments(v) { localStorage.setItem(this.K.ASSIGNMENTS, JSON.stringify(v)); },
 
   addDevice(d) {
-    const a = this.devices;
-    d.updatedAt = d.updatedAt || d.createdAt;
-    a.push(d);
-    this.devices = a;
-    enqueueOp('saveDevice', { device: d });
+    d.updatedAt = d.createdAt;
+    const a = this.devices; a.push(d); this.devices = a;
+    push('saveDevice', { device: d });
   },
   addAssignment(a) {
-    const all = this.assignments;
-    a.updatedAt = a.updatedAt || a.createdAt;
-    all.push(a);
-    this.assignments = all;
-    enqueueOp('saveAssignment', { assignment: a });
+    a.updatedAt = a.createdAt;
+    const all = this.assignments; all.push(a); this.assignments = all;
+    push('saveAssignment', { assignment: a });
   },
   getDevice(id)     { return this.devices.find(d => d.id === id); },
   getAssignment(id) { return this.assignments.find(a => a.id === id); },
@@ -90,23 +86,22 @@ const DB = {
   updateAssignment(id, patch) {
     const all = this.assignments;
     const i = all.findIndex(a => a.id === id);
-    if (i >= 0) {
-      all[i] = { ...all[i], ...patch, updatedAt: new Date().toISOString() };
-      this.assignments = all;
-      enqueueOp('saveAssignment', { assignment: all[i] });
-      return all[i];
-    }
+    if (i < 0) return;
+    all[i] = { ...all[i], ...patch, updatedAt: new Date().toISOString() };
+    this.assignments = all;
+    push('saveAssignment', { assignment: all[i] });
+    return all[i];
   },
   deleteDevice(id) {
     this.devices = this.devices.filter(d => d.id !== id);
     this.assignments = this.assignments.map(a => ({
-      ...a, deviceIds: a.deviceIds.filter(x => x !== id)
+      ...a, deviceIds: (a.deviceIds || []).filter(x => x !== id)
     }));
-    enqueueOp('deleteDevice', { id });
+    push('deleteDevice', { id });
   },
   deleteAssignment(id) {
     this.assignments = this.assignments.filter(a => a.id !== id);
-    enqueueOp('deleteAssignment', { id });
+    push('deleteAssignment', { id });
   },
 
   nextDeviceNum() {
@@ -122,74 +117,72 @@ const DB = {
 };
 
 // ─────────────────────────────────────────────────────
-// SYNC QUEUE — offline operations waiting to push
+// PUSH — direct write to Sheets, queue only if offline
 // ─────────────────────────────────────────────────────
 const Queue = {
-  _key: 'ft_sync_queue',
-  get() { return JSON.parse(localStorage.getItem(this._key) || '[]'); },
+  _key: 'ft_queue',
+  get()   { return JSON.parse(localStorage.getItem(this._key) || '[]'); },
   save(q) { localStorage.setItem(this._key, JSON.stringify(q)); },
-  push(op) { const q = this.get(); q.push(op); this.save(q); },
+  add(op) { const q = this.get(); q.push(op); this.save(q); },
   clear() { localStorage.removeItem(this._key); },
-  length() { return this.get().length; }
+  length(){ return this.get().length; }
 };
 
-let _drainInProgress = false;
-
-function enqueueOp(action, payload) {
-  Queue.push({
-    id: Date.now() + '-' + Math.random().toString(36).slice(2),
-    action,
-    payload,
-    ts: new Date().toISOString(),
-    retries: 0
-  });
+// Called after every local write — tries Sheets directly, queues on failure
+function push(action, payload) {
+  const body = buildBody(action, payload);
   updateSyncStatus();
-  // Push to Sheets immediately if online
-  if (navigator.onLine && Settings.gasUrl()) {
-    setTimeout(drainQueue, 200);
+
+  if (!Settings.gasUrl() || !navigator.onLine) {
+    // Offline — queue for later
+    Queue.add({ action, payload, ts: new Date().toISOString(), retries: 0 });
+    updateSyncStatus();
+    return;
   }
+
+  // Online — fire immediately, don't wait (UI is already updated)
+  setSyncState('syncing');
+  gasPostRaw(body)
+    .then(res => {
+      if (!res.ok) throw new Error(res.error || 'GAS error');
+      Settings.setLastSync(new Date().toISOString());
+      setSyncState('online');
+      updateSyncStatus();
+    })
+    .catch(err => {
+      console.warn('[Push] failed, queuing:', action, err.message);
+      Queue.add({ action, payload, ts: new Date().toISOString(), retries: 0 });
+      setSyncState('error');
+      updateSyncStatus();
+    });
 }
 
+function buildBody(action, payload) {
+  if (action === 'saveDevice')        return { action, device:     payload.device };
+  if (action === 'saveAssignment')    return { action, assignment: payload.assignment };
+  if (action === 'deleteDevice')      return { action, id: payload.id };
+  if (action === 'deleteAssignment')  return { action, id: payload.id };
+  return { action, ...payload };
+}
+
+// Drain queued offline operations — called on reconnect
 async function drainQueue() {
-  if (_drainInProgress) return;
   const gasUrl = Settings.gasUrl();
   if (!gasUrl || !navigator.onLine) return;
-
   const queue = Queue.get();
   if (!queue.length) return;
-
-  _drainInProgress = true;
-  setSyncState('syncing');
 
   const failed = [];
   for (const op of queue) {
     try {
-      // Build the correct POST body for each action type
-      let body;
-      if (op.action === 'saveDevice')      body = { action: op.action, device:     op.payload.device };
-      else if (op.action === 'saveAssignment') body = { action: op.action, assignment: op.payload.assignment };
-      else if (op.action === 'deleteDevice')   body = { action: op.action, id: op.payload.id };
-      else if (op.action === 'deleteAssignment') body = { action: op.action, id: op.payload.id };
-      else body = { action: op.action, ...op.payload };
-
-      const res = await gasPostRaw(body);
-      if (!res.ok) throw new Error(res.error || 'Server error');
+      const res = await gasPostRaw(buildBody(op.action, op.payload));
+      if (!res.ok) throw new Error(res.error || 'GAS error');
     } catch (e) {
-      console.warn('[Sync] op failed:', op.action, e.message);
       op.retries = (op.retries || 0) + 1;
       if (op.retries < 5) failed.push(op);
     }
   }
-
   Queue.save(failed);
-  _drainInProgress = false;
-
-  if (failed.length === 0) {
-    Settings.setLastSync(new Date().toISOString());
-    setSyncState('online');
-  } else {
-    setSyncState('error');
-  }
   updateSyncStatus();
 }
 
@@ -225,7 +218,7 @@ let _syncInProgress = false;
 async function syncNow(silent = false) {
   const gasUrl = Settings.gasUrl();
   if (!gasUrl) {
-    if (!silent) toast('No Google Sheets URL — configure in Settings', 'warning');
+    if (!silent) toast('No Google Sheets URL — configure in Settings ⚙', 'warning');
     return;
   }
   if (!navigator.onLine) {
@@ -237,20 +230,19 @@ async function syncNow(silent = false) {
   setSyncState('syncing');
 
   try {
-    // 1. Push any pending local changes first
+    // Push any queued offline operations first
     await drainQueue();
 
-    // 2. Pull latest from Sheets
+    // Pull the latest state from Sheets (single source of truth)
     const data = await gasGet('getAll');
     if (!data.ok) throw new Error(data.error || 'Sync failed');
 
-    // 3. Merge remote into local (last updatedAt wins)
     mergeRemote(data.devices || [], data.assignments || []);
     Settings.setLastSync(new Date().toISOString());
     setSyncState('online');
     updateSyncStatus();
     renderCurrentView();
-    if (!silent) toast('Synced with Google Sheets', 'success');
+    if (!silent) toast('Synced with Google Sheets ✓', 'success');
   } catch (e) {
     setSyncState('error');
     if (!silent) toast('Sync failed: ' + e.message, 'error');
@@ -261,10 +253,9 @@ async function syncNow(silent = false) {
 }
 
 function mergeRemote(remoteDevices, remoteAssignments) {
-  // Merge devices: last updatedAt wins
-  const localDevs = DB.devices;
+  // Devices — remote wins on same updatedAt or newer
   const devMap = {};
-  localDevs.forEach(d => { devMap[d.id] = d; });
+  DB.devices.forEach(d => { devMap[d.id] = d; });
   remoteDevices.forEach(rd => {
     if (!devMap[rd.id] || (rd.updatedAt || '') >= (devMap[rd.id].updatedAt || '')) {
       devMap[rd.id] = rd;
@@ -272,15 +263,10 @@ function mergeRemote(remoteDevices, remoteAssignments) {
   });
   DB.devices = Object.values(devMap);
 
-  // Merge assignments
-  const localAsgns = DB.assignments;
+  // Assignments — normalise deviceIds from CSV, then merge
   const asgnMap = {};
-  localAsgns.forEach(a => { asgnMap[a.id] = a; });
-  remoteAssignments.forEach(ra => {
-    // deviceIds is stored as comma-separated string in Sheets
-    if (typeof ra.deviceIds === 'string') {
-      ra.deviceIds = ra.deviceIds ? ra.deviceIds.split(',').map(s => s.trim()).filter(Boolean) : [];
-    }
+  DB.assignments.forEach(a => { asgnMap[a.id] = a; });
+  remoteAssignments.map(normaliseAssignment).forEach(ra => {
     if (!asgnMap[ra.id] || (ra.updatedAt || '') >= (asgnMap[ra.id].updatedAt || '')) {
       asgnMap[ra.id] = ra;
     }
@@ -289,29 +275,22 @@ function mergeRemote(remoteDevices, remoteAssignments) {
 }
 
 async function forcePull() {
-  if (!confirm('This will overwrite all local data with the data from Google Sheets. Continue?')) return;
+  if (!confirm('This will overwrite all local data with Google Sheets data. Continue?')) return;
   const gasUrl = Settings.gasUrl();
   if (!gasUrl) { toast('No Google Sheets URL configured', 'error'); return; }
   setSyncState('syncing');
   try {
     const data = await gasGet('getAll');
     if (!data.ok) throw new Error(data.error);
-    const devs = (data.devices || []);
-    const asgns = (data.assignments || []).map(a => ({
-      ...a,
-      deviceIds: typeof a.deviceIds === 'string'
-        ? a.deviceIds.split(',').map(s => s.trim()).filter(Boolean)
-        : (a.deviceIds || [])
-    }));
-    DB.devices = devs;
-    DB.assignments = asgns;
+    DB.devices     = data.devices || [];
+    DB.assignments = (data.assignments || []).map(normaliseAssignment);
     Queue.clear();
     Settings.setLastSync(new Date().toISOString());
     setSyncState('online');
     updateSyncStatus();
     renderCurrentView();
     closeModal('modalSettings');
-    toast('Pulled from Google Sheets', 'success');
+    toast('Pulled from Google Sheets ✓', 'success');
   } catch (e) {
     setSyncState('error');
     toast('Pull failed: ' + e.message, 'error');
@@ -338,40 +317,51 @@ async function testConnection() {
 
 async function saveSettings() {
   const url = document.getElementById('settingsGasUrl').value.trim();
+  if (!url) { toast('Enter the Google Apps Script URL first', 'warning'); return; }
   Settings.set({ gasUrl: url });
   closeModal('modalSettings');
-  toast('Settings saved — pulling data from Sheets…', 'success');
 
-  if (url && navigator.onLine) {
-    // Clear local demo data and pull real data from Sheets
-    setSyncState('syncing');
-    try {
-      const data = await gasGet('getAll');
-      if (data.ok) {
-        // Full overwrite — this device is now joining the shared dataset
-        const devs  = data.devices || [];
-        const asgns = (data.assignments || []).map(a => ({
-          ...a,
-          deviceIds: typeof a.deviceIds === 'string'
-            ? a.deviceIds.split(',').map(s => s.trim()).filter(Boolean)
-            : (a.deviceIds || [])
-        }));
-        DB.devices     = devs;
-        DB.assignments = asgns;
-        Queue.clear(); // local queue is irrelevant after full pull
-        Settings.setLastSync(new Date().toISOString());
-        setSyncState('online');
-        updateSyncStatus();
-        renderCurrentView();
-        toast(`Loaded ${devs.length} devices, ${asgns.length} assignments from Sheets`, 'success', 4000);
-      } else {
-        throw new Error(data.error || 'Unknown error');
-      }
-    } catch (e) {
-      setSyncState('error');
-      toast('Could not pull from Sheets: ' + e.message, 'error');
-    }
+  if (!navigator.onLine) {
+    toast('Settings saved. Will sync when online.', 'success');
+    return;
   }
+
+  setSyncState('syncing');
+  toast('Connecting to Google Sheets…');
+  try {
+    const data = await fetch(`${url}?action=ping`, { redirect: 'follow', cache: 'no-store' }).then(r => r.json());
+    if (!data.ok) throw new Error(data.error || 'GAS returned error');
+
+    // Ping OK — now pull all shared data (join the workspace)
+    const all = await fetch(`${url}?action=getAll`, { redirect: 'follow', cache: 'no-store' }).then(r => r.json());
+    if (!all.ok) throw new Error(all.error || 'Could not load data');
+
+    const devs  = all.devices || [];
+    const asgns = (all.assignments || []).map(normaliseAssignment);
+
+    DB.devices     = devs;
+    DB.assignments = asgns;
+    Queue.clear();
+    Settings.setLastSync(new Date().toISOString());
+    setSyncState('online');
+    updateSyncStatus();
+    renderCurrentView();
+    toast(`Connected ✓ — ${devs.length} devices, ${asgns.length} assignments loaded`, 'success', 5000);
+  } catch (e) {
+    setSyncState('error');
+    toast('Connection failed: ' + e.message, 'error', 6000);
+    console.error('[Settings] connect failed:', e);
+  }
+}
+
+// Normalise assignment coming from Sheets (deviceIds stored as CSV string)
+function normaliseAssignment(a) {
+  return {
+    ...a,
+    deviceIds: typeof a.deviceIds === 'string'
+      ? a.deviceIds.split(',').map(s => s.trim()).filter(Boolean)
+      : (Array.isArray(a.deviceIds) ? a.deviceIds : [])
+  };
 }
 
 function clearLocalData() {
